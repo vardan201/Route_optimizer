@@ -1,0 +1,84 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+import os
+import folium
+import uuid
+from geopy.distance import geodesic
+
+# Import the functions and variables from your existing script
+from route_optimization import find_shortest_path, get_nearest_node, G, nodes  
+
+app = FastAPI()
+@app.get("/")
+async def read_root():
+    return {"message": "Hello, World!"}
+
+# Define a request model to handle input data
+class Coordinates(BaseModel):
+    source_lat: float
+    source_lon: float
+    target_lat: float
+    target_lon: float
+
+# Function to get the route and visualization
+@app.post("/get_route/")
+async def get_route(coords: Coordinates):
+    # Get the nearest nodes for source and target coordinates
+    source_node = get_nearest_node(G, coords.source_lat, coords.source_lon)
+    target_node = get_nearest_node(G, coords.target_lat, coords.target_lon)
+    
+    # Call the existing find_shortest_path to get the optimized route and distance
+    shortest_path, path_length = find_shortest_path(G, source_node, target_node)
+    
+    # Determine the source and target region based on clustering
+    source_region = f"Region {nodes.loc[source_node, 'cluster']}"
+    target_region = f"Region {nodes.loc[target_node, 'cluster']}"
+
+    shortest_path_coords = [
+        {"lat": nodes.loc[node, 'y'], "lon": nodes.loc[node, 'x']} for node in shortest_path
+    ]
+
+    # Calculate the geodesic distance between source and target points
+    source_coords = (coords.source_lat, coords.source_lon)
+    target_coords = (coords.target_lat, coords.target_lon)
+    geodesic_distance = geodesic(source_coords, target_coords).meters
+
+    
+    # Create a map and plot the optimized path on it
+    m = folium.Map(location=[(coords.source_lat + coords.target_lat) / 2, 
+                             (coords.source_lon + coords.target_lon) / 2], zoom_start=12)
+    
+    # Add the shortest path to the map
+    for i in range(len(shortest_path) - 1):
+        src = shortest_path[i]
+        tgt = shortest_path[i + 1]
+        src_coords = (nodes.loc[src, 'y'], nodes.loc[src, 'x'])
+        tgt_coords = (nodes.loc[tgt, 'y'], nodes.loc[tgt, 'x'])
+        folium.PolyLine([src_coords, tgt_coords], color='blue', weight=2.5, opacity=0.8).add_to(m)
+    
+    # Generate a unique filename for the map
+    map_filename = f"shortest_path_map_{uuid.uuid4().hex}.html"
+    
+    # Save the map to an HTML file
+    m.save(map_filename)
+    
+    # Return the result with the map file's name and the file URL
+    return {
+        "shortest_path_coordinates": shortest_path_coords,
+        "path_length_meters": path_length,
+        "geodesic_distance_meters": geodesic_distance,
+        "source_region": source_region,
+        "target_region": target_region,
+        "map_file": map_filename
+    }
+
+# Endpoint to serve the map file
+@app.get("/map/{map_file}")
+async def get_map(map_file: str):
+    # Check if the map file exists and return it
+    if os.path.exists(map_file):
+        return {"map_file": map_file}
+    return {"error": "Map file not found"}
+
+# To run the FastAPI server, use the following command:
+# uvicorn main:app --reload
